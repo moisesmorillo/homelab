@@ -1,0 +1,16 @@
+# Managed by Ansible. Edit inventory variables, not this file.
+[Match]
+Name={{ networkd_interface }}
+
+[Network]
+DHCP=no
+{% for address in networkd_expected_addresses %}
+Address={{ address }}
+{% endfor %}
+Gateway={{ networkd_gateway }}
+{% for dns_server in networkd_dns_servers %}
+DNS={{ dns_server }}
+{% endfor %}
+{% if networkd_domains | length > 0 %}
+Domains={{ networkd_domains | join(' ') }}
+{% endif %}

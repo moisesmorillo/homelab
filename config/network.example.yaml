@@ -1,0 +1,70 @@
+---
+# Documentation-only network data. Runtime automation must reject this profile.
+homelab:
+  safety:
+    mode: example
+    environment_id: public-example
+
+  lan:
+    cidr: 192.0.2.0/24
+    prefix_length: 24
+    gateway: 192.0.2.254
+    domain: example.invalid
+    dhcp:
+      current_owner: sample-router
+      target_owner: sample-firewall
+      start: 192.0.2.128
+      end: 192.0.2.223
+      target_dns_servers:
+        - 192.0.2.10
+        - 192.0.2.11
+
+  allocations:
+    resolver_primary_example:
+      hostname: resolver-a
+      address: 192.0.2.10
+      role: dns
+      technitium_target_role: primary
+      placement: service-node-a
+      lifecycle: example
+    resolver_secondary_example:
+      hostname: resolver-b
+      address: 192.0.2.11
+      role: dns
+      technitium_target_role: secondary
+      placement: service-node-b
+      lifecycle: example
+    sample_management:
+      hostname: sample-node-a
+      address: 192.0.2.32
+      role: management
+      placement: sample-node-a
+      lifecycle: example
+    sample_service:
+      hostname: sample-service-a
+      address: 192.0.2.40
+      role: example-service
+      placement: sample-node-a
+      lifecycle: example
+    sample_recovery:
+      hostname: sample-recovery-a
+      address: 192.0.2.63
+      role: migration-only
+      placement: sample-node-a
+      lifecycle: example
+    control_plane_example:
+      hostname: control-plane-a
+      address: 192.0.2.36
+      role: kubernetes-control-plane
+      placement: compute-node-a
+      lifecycle: example
+
+  reserved_ranges:
+    network_services: 192.0.2.8-192.0.2.15
+    managed_nodes: 192.0.2.32-192.0.2.47
+    virtual_infrastructure: 192.0.2.48-192.0.2.55
+    migration_examples: 192.0.2.56-192.0.2.63
+
+  kubernetes:
+    pod_cidr: 198.51.100.0/26
+    service_cidr: 203.0.113.0/27

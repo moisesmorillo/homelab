@@ -1,0 +1,499 @@
+---
+- name: Refuse unconfirmed changes or public example data
+  ansible.builtin.assert:
+    that:
+      - networkd_safety_mode == 'live'
+      - networkd_safety_environment_id is string
+      - networkd_safety_environment_id | length > 0
+      - networkd_confirmed_environment_id == networkd_safety_environment_id
+      - networkd_confirmed_target == inventory_hostname
+      - ansible_limit | default('') == inventory_hostname
+    fail_msg: >-
+      Refusing to apply network changes without a confirmed live overlay and an exact
+      single-host --limit.
+  when: networkd_apply | bool
+
+- name: Validate required network variables
+  ansible.builtin.assert:
+    that:
+      - networkd_interface | length > 0
+      - networkd_primary_address | length > 0
+      - networkd_primary_address is match('^[0-9.]+/[0-9]+$')
+      - networkd_gateway is match('^[0-9.]+$')
+      - networkd_rollback_timeout_seconds | int >= 60
+    fail_msg: Refusing to render an incomplete or obviously invalid network configuration.
+
+- name: Build the expected address set
+  ansible.builtin.set_fact:
+    networkd_expected_addresses: >-
+      {{
+        ([networkd_primary_address]
+        + networkd_service_addresses
+        + networkd_legacy_addresses)
+        | unique
+        | list
+      }}
+    networkd_expected_ips: >-
+      {{
+        ([networkd_primary_address]
+        + networkd_service_addresses
+        + networkd_legacy_addresses)
+        | map('regex_replace', '/.*$', '')
+        | unique
+        | list
+      }}
+    networkd_management_ips:
+      - "{{ networkd_primary_address | regex_replace('/.*$', '') }}"
+    networkd_service_ips: >-
+      {{
+        networkd_service_addresses
+        | map('regex_replace', '/.*$', '')
+        | unique
+        | list
+      }}
+
+- name: Validate every desired address
+  ansible.builtin.assert:
+    that:
+      - item is match('^[0-9.]+/[0-9]+$')
+    fail_msg: "Invalid IPv4/CIDR value: {{ item }}"
+  loop: "{{ networkd_expected_addresses }}"
+
+- name: Protect the address used by the current Ansible connection
+  ansible.builtin.assert:
+    that:
+      - ansible_host in networkd_expected_ips
+    fail_msg: >-
+      The active Ansible endpoint is absent from the desired addresses. Keep the legacy
+      address, or update the inventory to connect through the new management address first.
+  when: networkd_apply | bool
+
+- name: Find active rollback timers from an earlier run
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - list-units
+      - --type=timer
+      - --state=activating,active,reloading,deactivating,failed
+      - --no-legend
+      - --plain
+      - homelab-network-rollback-*.timer
+  check_mode: false
+  changed_when: false
+  register: networkd_existing_rollback_timers
+
+- name: Find active rollback services from an earlier run
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - list-units
+      - --type=service
+      - --state=activating,active,reloading,deactivating,failed
+      - --no-legend
+      - --plain
+      - homelab-network-rollback-*.service
+  check_mode: false
+  changed_when: false
+  register: networkd_existing_rollback_services
+
+- name: Refuse to race an earlier rollback
+  ansible.builtin.assert:
+    that:
+      - networkd_existing_rollback_timers.stdout | trim | length == 0
+      - networkd_existing_rollback_services.stdout | trim | length == 0
+    fail_msg: >-
+      A prior homelab network rollback is still armed, running, or failed. Inspect it before
+      running this playbook again. Timers: {{ networkd_existing_rollback_timers.stdout | trim }}.
+      Services: {{ networkd_existing_rollback_services.stdout | trim }}.
+
+- name: Confirm systemd-networkd is active
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - systemd-networkd
+  check_mode: false
+  changed_when: false
+  register: networkd_service_state
+  failed_when: networkd_service_state.stdout | trim != 'active'
+
+- name: Confirm the requested interface exists
+  ansible.builtin.command:
+    argv:
+      - ip
+      - link
+      - show
+      - dev
+      - "{{ networkd_interface }}"
+  check_mode: false
+  changed_when: false
+
+- name: Read the current default route
+  ansible.builtin.command:
+    argv:
+      - ip
+      - -4
+      - route
+      - show
+      - default
+      - via
+      - "{{ networkd_gateway }}"
+      - dev
+      - "{{ networkd_interface }}"
+  check_mode: false
+  changed_when: false
+  register: networkd_default_route_before
+
+- name: Confirm the expected gateway owns the current default route
+  ansible.builtin.assert:
+    that:
+      - networkd_default_route_before.stdout | trim | length > 0
+    fail_msg: The live default route does not use the configured gateway.
+
+- name: Inspect the current networkd configuration
+  ansible.builtin.stat:
+    path: "{{ networkd_config_path }}"
+  register: networkd_existing_config
+
+- name: Require an existing configuration for safe adoption
+  ansible.builtin.assert:
+    that:
+      - networkd_existing_config.stat.exists
+      - networkd_existing_config.stat.isreg | default(false)
+    fail_msg: >-
+      The expected networkd file does not exist. Inspect the host before allowing this role
+      to create a new renderer configuration.
+  when: networkd_require_existing_config | bool or networkd_apply | bool
+
+- name: Acquire the exclusive network migration lock
+  ansible.builtin.command:
+    argv:
+      - mkdir
+      - -m
+      - '0700'
+      - --
+      - "{{ networkd_lock_path }}"
+  changed_when: true
+  when:
+    - networkd_apply | bool
+    - not ansible_check_mode
+
+- name: Preserve the current recovery configuration
+  ansible.builtin.copy:
+    src: "{{ networkd_config_path }}"
+    dest: "{{ networkd_rollback_copy_path }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: '0600'
+  when:
+    - networkd_existing_config.stat.exists
+    - networkd_apply | bool
+    - not ansible_check_mode
+
+- name: Install the local rollback helper
+  ansible.builtin.template:
+    src: rollback.sh.j2
+    dest: "{{ networkd_rollback_script_path }}"
+    owner: root
+    group: root
+    mode: '0700'
+  when:
+    - networkd_apply | bool
+    - not ansible_check_mode
+
+- name: Create a unique rollback unit name
+  ansible.builtin.set_fact:
+    networkd_rollback_unit: "homelab-network-rollback-{{ ansible_date_time.epoch }}"
+  when:
+    - networkd_apply | bool
+    - not ansible_check_mode
+
+- name: Schedule automatic rollback before touching the interface
+  ansible.builtin.command:
+    argv:
+      - systemd-run
+      - "--unit={{ networkd_rollback_unit }}"
+      - "--on-active={{ networkd_rollback_timeout_seconds }}s"
+      - --timer-property=RemainAfterElapse=no
+      - --timer-property=AccuracySec=1s
+      - "{{ networkd_rollback_script_path }}"
+      - automatic
+  changed_when: true
+  when:
+    - networkd_apply | bool
+    - not ansible_check_mode
+
+- name: Write the desired networkd configuration after arming rollback
+  ansible.builtin.template:
+    src: interface.network.j2
+    dest: "{{ networkd_config_path }}"
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+  when:
+    - networkd_apply | bool or ansible_check_mode
+
+- name: Reload networkd configuration
+  ansible.builtin.command:
+    argv:
+      - networkctl
+      - reload
+  changed_when: true
+  when:
+    - networkd_apply | bool
+    - not ansible_check_mode
+
+- name: Wait for the original Ansible path to recover
+  ansible.builtin.wait_for_connection:
+    delay: 2
+    timeout: 45
+  when:
+    - networkd_apply | bool
+    - not ansible_check_mode
+
+- name: Read active IPv4 addresses after reconfiguration
+  ansible.builtin.command:
+    argv:
+      - ip
+      - -o
+      - -4
+      - address
+      - show
+      - dev
+      - "{{ networkd_interface }}"
+  changed_when: false
+  register: networkd_active_addresses
+  when:
+    - networkd_apply | bool
+    - not ansible_check_mode
+
+- name: Confirm every expected address is active on the host
+  ansible.builtin.assert:
+    that:
+      - item in networkd_active_addresses.stdout
+    fail_msg: "Expected address {{ item }} is not active; the rollback timer remains armed."
+  loop: "{{ networkd_expected_addresses }}"
+  when:
+    - networkd_apply | bool
+    - not ansible_check_mode
+
+- name: Read the default route after reconfiguration
+  ansible.builtin.command:
+    argv:
+      - ip
+      - -4
+      - route
+      - show
+      - default
+      - via
+      - "{{ networkd_gateway }}"
+      - dev
+      - "{{ networkd_interface }}"
+  changed_when: false
+  register: networkd_default_route_after
+  when:
+    - networkd_apply | bool
+    - not ansible_check_mode
+
+- name: Confirm the default route survived reconfiguration
+  ansible.builtin.assert:
+    that:
+      - networkd_default_route_after.stdout | trim | length > 0
+    fail_msg: The expected default route is missing; the rollback timer remains armed.
+  when:
+    - networkd_apply | bool
+    - not ansible_check_mode
+
+- name: Confirm the gateway responds from the host
+  ansible.builtin.command:
+    argv:
+      - ping
+      - -c
+      - '2'
+      - -W
+      - '2'
+      - "{{ networkd_gateway }}"
+  changed_when: false
+  when:
+    - networkd_apply | bool
+    - not ansible_check_mode
+
+- name: Confirm the new management address accepts TCP from the controller
+  ansible.builtin.wait_for:
+    host: "{{ item }}"
+    port: "{{ networkd_verify_port }}"
+    state: started
+    timeout: 15
+  loop: "{{ networkd_management_ips }}"
+  become: false
+  delegate_to: localhost
+  when:
+    - networkd_apply | bool
+    - networkd_verify_from_controller | bool
+    - not ansible_check_mode
+
+- name: Read the trusted SSH host key through the existing connection
+  ansible.builtin.slurp:
+    src: /etc/ssh/ssh_host_ed25519_key.pub
+  register: networkd_trusted_ssh_host_key
+  when:
+    - networkd_apply | bool
+    - networkd_verify_from_controller | bool
+    - not ansible_check_mode
+
+- name: Extract the trusted SSH key material
+  ansible.builtin.set_fact:
+    networkd_trusted_ssh_key_material: >-
+      {{ (networkd_trusted_ssh_host_key.content | b64decode).split()[1] }}
+  when:
+    - networkd_apply | bool
+    - networkd_verify_from_controller | bool
+    - not ansible_check_mode
+
+- name: Scan SSH keys on each new address from the controller
+  ansible.builtin.command:
+    argv:
+      - ssh-keyscan
+      - -T
+      - '5'
+      - -p
+      - "{{ networkd_verify_port }}"
+      - -t
+      - ed25519
+      - "{{ item }}"
+  loop: "{{ networkd_management_ips }}"
+  changed_when: false
+  register: networkd_scanned_ssh_host_keys
+  become: false
+  delegate_to: localhost
+  when:
+    - networkd_apply | bool
+    - networkd_verify_from_controller | bool
+    - not ansible_check_mode
+
+- name: Confirm every new address presents the trusted host key
+  ansible.builtin.assert:
+    that:
+      - networkd_trusted_ssh_key_material in item.stdout
+    fail_msg: >-
+      {{ item.item }} did not present the trusted managed-host SSH key; the rollback timer
+      remains armed.
+  loop: "{{ networkd_scanned_ssh_host_keys.results }}"
+  become: false
+  delegate_to: localhost
+  when:
+    - networkd_apply | bool
+    - networkd_verify_from_controller | bool
+    - not ansible_check_mode
+
+- name: Authenticate using only the verified SSH host keys
+  become: false
+  delegate_to: localhost
+  when:
+    - networkd_apply | bool
+    - networkd_verify_from_controller | bool
+    - not ansible_check_mode
+  block:
+    - name: Create an isolated known-hosts file on the controller
+      ansible.builtin.tempfile:
+        state: file
+        prefix: homelab-network-known-hosts-
+      register: networkd_controller_known_hosts
+
+    - name: Trust only the keys already matched to the current host
+      ansible.builtin.copy:
+        content: >-
+          {{
+            (networkd_scanned_ssh_host_keys.results
+            | map(attribute='stdout')
+            | join('\n')) ~ '\n'
+          }}
+        dest: "{{ networkd_controller_known_hosts.path }}"
+        mode: '0600'
+
+    - name: Authenticate over SSH to every new management address
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [networkd_controller_ssh_command,
+            '-o', 'BatchMode=yes',
+            '-o', 'ConnectTimeout=10',
+            '-o', 'StrictHostKeyChecking=yes',
+            '-o', 'UserKnownHostsFile=' ~ networkd_controller_known_hosts.path,
+            '-o', 'HostKeyAlgorithms=ssh-ed25519',
+            '-o', 'LogLevel=ERROR',
+            '-p', networkd_verify_port | string]
+            + (['-i', hostvars[inventory_hostname].ansible_ssh_private_key_file]
+              if hostvars[inventory_hostname].ansible_ssh_private_key_file is defined else [])
+            + [hostvars[inventory_hostname].ansible_user ~ '@' ~ item, 'true']
+          }}
+      loop: "{{ networkd_management_ips }}"
+      changed_when: false
+
+  always:
+    - name: Remove the isolated known-hosts file
+      ansible.builtin.file:
+        path: "{{ networkd_controller_known_hosts.path | default('') }}"
+        state: absent
+      when: networkd_controller_known_hosts.path | default('') | length > 0
+
+- name: Confirm service addresses respond from the controller
+  ansible.builtin.command:
+    argv:
+      - ping
+      - -c
+      - '1'
+      - "{{ item }}"
+  loop: "{{ networkd_service_ips }}"
+  changed_when: false
+  become: false
+  delegate_to: localhost
+  when:
+    - networkd_apply | bool
+    - networkd_verify_from_controller | bool
+    - not ansible_check_mode
+
+- name: Commit the new network state before disarming rollback
+  ansible.builtin.command:
+    argv:
+      - ln
+      - -s
+      - commit
+      - "{{ networkd_decision_path }}"
+  changed_when: true
+  when:
+    - networkd_apply | bool
+    - not ansible_check_mode
+
+- name: Stop both rollback units after the commit marker wins
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - stop
+      - "{{ networkd_rollback_unit }}.timer"
+      - "{{ networkd_rollback_unit }}.service"
+  changed_when: true
+  when:
+    - networkd_apply | bool
+    - not ansible_check_mode
+
+- name: Remove the completed rollback decision marker
+  ansible.builtin.file:
+    path: "{{ networkd_decision_path }}"
+    state: absent
+  when:
+    - networkd_apply | bool
+    - not ansible_check_mode
+
+- name: Release the exclusive network migration lock
+  ansible.builtin.command:
+    argv:
+      - rmdir
+      - --
+      - "{{ networkd_lock_path }}"
+  changed_when: true
+  when:
+    - networkd_apply | bool
+    - not ansible_check_mode

@@ -1,0 +1,12 @@
+---
+# The default inventory is intentionally empty. Runtime hosts belong in a private overlay.
+all:
+  children:
+    physical_hosts:
+      hosts: {}
+    k3s_servers:
+      hosts: {}
+    target_dns_servers:
+      hosts: {}
+    proxmox_guests:
+      hosts: {}

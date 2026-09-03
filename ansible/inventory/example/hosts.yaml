@@ -1,0 +1,18 @@
+---
+# Documentation only. This inventory is not selected by ansible.cfg.
+all:
+  hosts:
+    sample-node-a:
+      ansible_host: sample-node-a.example.invalid
+    resolver-node-b:
+      ansible_host: resolver-node-b.example.invalid
+  children:
+    physical_hosts:
+      hosts:
+        sample-node-a:
+    target_dns_servers:
+      hosts:
+        resolver-node-b:
+    virtual_guests:
+      hosts:
+        resolver-node-b:

@@ -1,0 +1,20 @@
+---
+ansible_user: automation
+
+networkd_interface: eth0
+networkd_primary_address: >-
+  {{ homelab.allocations.sample_management.address }}/{{ homelab.lan.prefix_length }}
+networkd_service_addresses:
+  - >-
+    {{ homelab.allocations.sample_service.address }}/{{ homelab.lan.prefix_length }}
+networkd_legacy_addresses:
+  - >-
+    {{ homelab.allocations.sample_recovery.address }}/{{ homelab.lan.prefix_length }}
+networkd_gateway: "{{ homelab.lan.gateway }}"
+networkd_dns_servers:
+  - "{{ homelab.lan.gateway }}"
+networkd_domains:
+  - "{{ homelab.lan.domain }}"
+
+# Mutation is always disabled in public example data.
+networkd_apply: false
