@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+mode=${1:-manual}
+
+if [ "$mode" = automatic ]; then
+    if [ ! -d {{ networkd_lock_path | quote }} ]; then
+        exit 0
+    fi
+
+    if ! ln -s rollback {{ networkd_decision_path | quote }} 2>/dev/null; then
+        decision=$(readlink {{ networkd_decision_path | quote }} 2>/dev/null || true)
+        if [ "$decision" = commit ]; then
+            exit 0
+        fi
+        exit 1
+    fi
+fi
+
+install -m 0644 -- {{ networkd_rollback_copy_path | quote }} {{ networkd_config_path | quote }}
+networkctl reload
+
+# An automatic rollback leaves its decision and lock as a safety latch. A human-reviewed
+# manual recovery re-applies the inspected snapshot and clears that latch.
+if [ "$mode" = manual ]; then
+    rm -f -- {{ networkd_decision_path | quote }}
+    rmdir -- {{ networkd_lock_path | quote }} 2>/dev/null || true
+fi

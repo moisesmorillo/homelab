@@ -1,0 +1,56 @@
+.DS_Store
+.venv/
+.ansible/
+.tools/
+__pycache__/
+*.py[cod]
+
+# Private/local overlays. Live data belongs outside the public repository.
+/.local/
+/config/network.yaml
+/ansible/inventory/production/
+/ansible/inventory/private/
+/docs/private/
+*.local.yaml
+*.local.yml
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.kubeconfig
+kubeconfig*
+**/.vault-password
+**/*.decrypted.*
+**/*.unencrypted.*
+
+# Ansible
+*.retry
+
+# OpenTofu
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+terraform.tfvars.json
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+!*.tfvars.json.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.auto.tfvars
+*.auto.tfvars.json
+!*.auto.tfvars.example
+
+# Generated artifacts
+build/
+dist/
+tmp/

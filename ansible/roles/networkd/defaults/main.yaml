@@ -1,0 +1,28 @@
+---
+networkd_interface: ""
+networkd_primary_address: ""
+networkd_service_addresses: []
+networkd_legacy_addresses: []
+networkd_gateway: ""
+networkd_dns_servers: []
+networkd_domains: []
+
+networkd_config_path: "/etc/systemd/network/05-{{ networkd_interface }}.network"
+networkd_rollback_copy_path: "{{ networkd_config_path }}.homelab-rollback"
+networkd_rollback_script_path: /usr/local/sbin/homelab-network-rollback
+networkd_lock_path: /run/lock/homelab-network-migration.lock
+networkd_decision_path: "{{ networkd_lock_path }}/decision"
+networkd_rollback_timeout_seconds: 180
+
+# Safe default: normal execution remains read-only unless this is explicitly enabled.
+networkd_apply: false
+networkd_require_existing_config: true
+networkd_verify_from_controller: true
+networkd_verify_port: 22
+networkd_controller_ssh_command: ssh
+
+# Runtime mutation requires a live overlay plus exact environment and host confirmations.
+networkd_safety_mode: example
+networkd_safety_environment_id: ""
+networkd_confirmed_environment_id: ""
+networkd_confirmed_target: ""

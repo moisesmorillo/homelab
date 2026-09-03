@@ -1,0 +1,38 @@
+---
+- name: Stage the managed host network migration
+  hosts: physical_hosts
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  serial: 1
+
+  pre_tasks:
+    - name: Validate the live overlay and exact target on the controller
+      ansible.builtin.assert:
+        that:
+          - (homelab | default({})) is mapping
+          - (homelab | default({})).get('safety', {}) is mapping
+          - (homelab | default({})).get('safety', {}).get('mode', '') == 'live'
+          - (homelab | default({})).get('safety', {}).get('environment_id', '') is string
+          - (homelab | default({})).get('safety', {}).get('environment_id', '') | length > 0
+          - >-
+            homelab_environment_confirmation | default('')
+            == (homelab | default({})).get('safety', {}).get('environment_id', '')
+          - homelab_target_confirmation | default('') == inventory_hostname
+          - ansible_limit | default('') == inventory_hostname
+        fail_msg: >-
+          Refusing to contact the managed host without a live private overlay, an exact
+          environment confirmation, and an exact single-host --limit confirmation.
+      become: false
+      delegate_to: localhost
+
+    - name: Gather host facts after the controller safety gate
+      ansible.builtin.setup:
+
+  roles:
+    - role: networkd
+      vars:
+        networkd_safety_mode: "{{ homelab.safety.mode }}"
+        networkd_safety_environment_id: "{{ homelab.safety.environment_id }}"
+        networkd_confirmed_environment_id: "{{ homelab_environment_confirmation }}"
+        networkd_confirmed_target: "{{ homelab_target_confirmation }}"

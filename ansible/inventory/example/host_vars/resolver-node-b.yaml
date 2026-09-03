@@ -1,0 +1,6 @@
+---
+ansible_user: automation
+
+technitium_target_role: secondary
+technitium_listen_address: >-
+  {{ homelab.allocations.resolver_secondary_example.address }}
